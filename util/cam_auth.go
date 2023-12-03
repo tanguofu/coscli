@@ -104,6 +104,8 @@ func CamAuth(roleName string) TISecurityCredentials {
 		os.Exit(1)
 	}
 
+	logger.Infof("Get cam auth: %+v", data)
+
 	if data.Code != "Success" {
 		logger.Fatalln("Get cam auth error : response error", err)
 		os.Exit(1)

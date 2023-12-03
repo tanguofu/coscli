@@ -3,7 +3,6 @@ package logger
 import (
 	"io"
 	"os"
-	"path/filepath"
 	"runtime"
 	"time"
 
@@ -15,7 +14,8 @@ import (
 var logName = "coscli.log"
 
 func init() {
-	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	// dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	dir, err := os.Getwd()
 	if err != nil {
 		dir = "."
 	}

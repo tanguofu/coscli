@@ -42,7 +42,7 @@ func NewClient(config *Config, param *Param, bucketName string) *cos.Client {
 				SessionToken: secretToken,
 			},
 		})
-	} else if config.Base.Mode == "TIRole" {
+	} else if config.Base.Mode == "TIONE_QCSRole" {
 		data := CamAuth(config.Base.CvmRoleName)
 
 		return cos.NewClient(GenURL(config, param, bucketName), &http.Client{
@@ -94,7 +94,7 @@ func CreateClient(config *Config, param *Param, bucketIDName string) *cos.Client
 		secretToken = param.SessionToken
 	}
 
-	if config.Base.Mode == "TIRole" {
+	if config.Base.Mode == "TIONE_QCSRole" {
 		data := CamAuth(config.Base.CvmRoleName)
 		return cos.NewClient(GenURL(config, param, bucketIDName), &http.Client{
 			Transport: &TICredentialTransport{

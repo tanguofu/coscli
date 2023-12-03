@@ -203,6 +203,7 @@ func watchAndUpload(args []string, recursive bool, include string, exclude strin
 	_, localPath := util.ParsePath(args[0])
 	bucketName, cosPath := util.ParsePath(args[1])
 
+	logger.Infof("NewClient from config: %+v", config)
 	c := util.NewClient(&config, &param, bucketName)
 
 	addedDirs := make(map[string]bool)
