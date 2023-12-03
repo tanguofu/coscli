@@ -1,8 +1,9 @@
 package util
 
 import (
-	"github.com/tencentyun/cos-go-sdk-v5"
 	"net/http"
+
+	"github.com/tencentyun/cos-go-sdk-v5"
 )
 
 var secretID, secretKey, secretToken string
@@ -41,6 +42,19 @@ func NewClient(config *Config, param *Param, bucketName string) *cos.Client {
 				SessionToken: secretToken,
 			},
 		})
+	} else if config.Base.Mode == "TIRole" {
+		data := CamAuth(config.Base.CvmRoleName)
+
+		return cos.NewClient(GenURL(config, param, bucketName), &http.Client{
+			Transport: &TICredentialTransport{
+				RoleName:     TIRoleName,
+				secretID:     data.TmpSecretId,
+				secretKey:    data.TmpSecretKey,
+				sessionToken: data.Token,
+				expiredTime:  data.ExpiredTime,
+			},
+		})
+
 	} else {
 		return cos.NewClient(GenURL(config, param, bucketName), &http.Client{
 			Transport: &cos.AuthorizationTransport{
@@ -79,6 +93,20 @@ func CreateClient(config *Config, param *Param, bucketIDName string) *cos.Client
 	if param.SessionToken != "" {
 		secretToken = param.SessionToken
 	}
+
+	if config.Base.Mode == "TIRole" {
+		data := CamAuth(config.Base.CvmRoleName)
+		return cos.NewClient(GenURL(config, param, bucketIDName), &http.Client{
+			Transport: &TICredentialTransport{
+				RoleName:     TIRoleName,
+				secretID:     data.TmpSecretId,
+				secretKey:    data.TmpSecretKey,
+				sessionToken: data.Token,
+				expiredTime:  data.ExpiredTime,
+			},
+		})
+	}
+
 	return cos.NewClient(CreateURL(bucketIDName, config.Base.Protocol, param.Endpoint), &http.Client{
 		Transport: &cos.AuthorizationTransport{
 			SecretID:     secretID,

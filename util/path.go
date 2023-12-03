@@ -1,8 +1,11 @@
 package util
 
 import (
-	"github.com/mitchellh/go-homedir"
+	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/mitchellh/go-homedir"
 )
 
 func IsCosPath(path string) bool {
@@ -16,7 +19,20 @@ func IsCosPath(path string) bool {
 	}
 }
 
+func IsDirExists(path string) bool {
+
+	if info, err := os.Stat(path); os.IsNotExist(err) {
+		return false
+	} else if !info.IsDir() {
+		return false
+	}
+
+	return true
+}
+
 func ParsePath(url string) (bucketName string, path string) {
+
+	var err error
 	if IsCosPath(url) {
 		res := strings.SplitN(url[6:], "/", 2)
 		if len(res) < 2 {
@@ -28,8 +44,12 @@ func ParsePath(url string) (bucketName string, path string) {
 		if url[0] == '~' {
 			home, _ := homedir.Dir()
 			path = home + url[1:]
-		} else {
-			path = url
+			return "", path
+		}
+
+		path, err = filepath.Abs(url)
+		if err != nil {
+			return "", url
 		}
 		return "", path
 	}
