@@ -127,65 +127,108 @@ func init() {
 }
 
 type PeriodSynced struct {
-	ChangedFiles map[string]int64
-	mu           sync.Mutex
-	Wg           sync.WaitGroup
-	Quit         chan struct{}
+	ChangedHeap util.FileChangedHeap
+	WatchedDirs map[string]bool
+	Wg          sync.WaitGroup
+	ChangedChan chan util.FileChangedItem
 }
 
 func NewPeriodSynced() *PeriodSynced {
 	return &PeriodSynced{
-		ChangedFiles: make(map[string]int64),
-		Quit:         make(chan struct{}),
+		ChangedHeap: *util.NewFileChangedHeap(),
+		WatchedDirs: make(map[string]bool),
+		ChangedChan: make(chan util.FileChangedItem),
 	}
 }
 
-func (p *PeriodSynced) Update(filePath string, size int64) {
-	p.mu.Lock()
-	p.ChangedFiles[filePath] = size
-	p.mu.Unlock()
-}
+func (p *PeriodSynced) AddWatchRecursion(dir string, watcher *fsnotify.Watcher) error {
 
-func (p *PeriodSynced) UploadAndFlush(c *cos.Client, localPath, bucketName, cosPath string, op *util.UploadOptions) {
-	swapMap := make(map[string]int64)
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 
-	// swap
-	p.mu.Lock()
-	backup := p.ChangedFiles
-	p.ChangedFiles = swapMap
-	swapMap = backup
-	p.mu.Unlock()
+		if err != nil {
+			logger.Warnf("watch sub path:%s, err: %s", path, err)
+			return err
+		}
 
-	// upload
-	p.Wg.Add(1)
-	var i = 0
-	for filePath, size := range swapMap {
-		logger.Infof("sync (%d/%d) file: %s, %d Bytes", i, len(swapMap), filePath, size)
-		i++
-		UploadSingleFile(c, localPath, bucketName, cosPath, filePath, op)
-	}
-	p.Wg.Done()
+		if strings.HasSuffix(path, "coscli.log") {
+			return nil
+		}
+
+		if p.WatchedDirs[path] {
+			return nil
+		}
+
+		mode := info.Mode()
+
+		if mode.IsRegular() {
+			p.ChangedHeap.Update(path, info.ModTime())
+			return nil
+		}
+
+		if mode.IsDir() {
+			err = watcher.Add(path)
+			if err != nil {
+				logger.Warnf("watch sub path:%s, err: %s", path, err)
+				return err
+			}
+			p.WatchedDirs[path] = true
+			return nil
+
+		}
+
+		logger.Infof("skip path :%s, mode:%+v", path, mode)
+		return nil
+	})
 }
 
 func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string, op *util.UploadOptions) {
 	// mark start
 	p.Wg.Add(1)
+	period := 5 * time.Minute
 
 	for {
 		select {
-		case <-time.After(5 * time.Minute):
-			p.UploadAndFlush(c, localPath, bucketName, cosPath, op)
+		// 每 5分钟执行一次
+		case <-time.After(period):
 
-		case <-p.Quit:
-			p.UploadAndFlush(c, localPath, bucketName, cosPath, op)
-			// mark end
-			p.Wg.Done()
-			return
+			for i := 0; i < p.ChangedHeap.Len(); i++ {
+				_, changed := p.ChangedHeap.Top()
+				// 修改事件 到  now  已经有 5min
+				if time.Since(changed) > period {
+					_, path, _ := p.ChangedHeap.PopOlder()
+					p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
+				}
+			}
+
+			// 每 收到事件
+		case item, ok := <-p.ChangedChan:
+
+			if len(item.Path) > 0 {
+				p.ChangedHeap.Update(item.Path, item.Changed)
+			}
+
+			// 通道关闭
+			if !ok {
+				// 退出的时候 全部同步完
+				for i := 0; i < p.ChangedHeap.Len(); i++ {
+					_, path, _ := p.ChangedHeap.PopOlder()
+					p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
+				}
+				// mark end
+				p.Wg.Done()
+				return
+			}
 		}
 	}
 }
 
-func UploadSingleFile(c *cos.Client, localPath, bucketName, cosPath, filePath string, op *util.UploadOptions) {
+func (p *PeriodSynced) UploadSingleFile(c *cos.Client, localPath, bucketName, cosPath, filePath string, op *util.UploadOptions) {
+
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		logger.Warnf("get Stat path: %s ,err: %v", filePath, err)
+		return
+	}
 
 	relPath, err := filepath.Rel(localPath, filePath)
 	if err != nil {
@@ -194,6 +237,7 @@ func UploadSingleFile(c *cos.Client, localPath, bucketName, cosPath, filePath st
 	}
 	cosSyncPath := filepath.Join(cosPath, relPath)
 
+	logger.Infof("syn %s, size: %s, modify: %s, there is %d need to sync", filePath, util.FormatSize(fi.Size()), fi.ModTime().Format("2006-01-02 15:04:05.000"), p.ChangedHeap.Len())
 	util.SyncSingleUpload(c, filePath, bucketName, cosSyncPath, op)
 }
 
@@ -206,7 +250,6 @@ func watchAndUpload(args []string, recursive bool, include string, exclude strin
 	logger.Infof("NewClient from config: %+v", config)
 	c := util.NewClient(&config, &param, bucketName)
 
-	addedDirs := make(map[string]bool)
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		logger.Fatalf("fsnotify.NewWatcher, err:%v", err)
@@ -214,46 +257,14 @@ func watchAndUpload(args []string, recursive bool, include string, exclude strin
 	defer watcher.Close()
 
 	Syncer := NewPeriodSynced()
-
-	// 1. 递归添加文件夹到监控列表
-	err = filepath.Walk(localPath, func(path string, info os.FileInfo, err error) error {
-
-		if err != nil {
-			logger.Warnf("watch sub path:%s, err: %s", path, err)
-			return nil
-		}
-
-		mode := info.Mode()
-		if mode.IsDir() {
-			if !addedDirs[path] {
-				err = watcher.Add(path)
-				if err != nil {
-					logger.Warnf("watch sub path:%s, err: %s", path, err)
-					return err
-				}
-				addedDirs[path] = true
-				logger.Warnf("watch sub path:%s ok", path)
-			}
-		} else if mode.IsRegular() {
-			Syncer.Update(path, info.Size())
-		} else {
-			logger.Infof("skip file:%s, mode:%o", path, mode)
-		}
-		return nil
-	})
-
-	if err != nil {
-		logger.Fatalf("filepath.Walk err: %v", err)
-	}
-
 	go Syncer.Sync(c, localPath, bucketName, cosPath, op)
 
-	// 3. watch dir
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGTERM)
 	signal.Notify(signalChan, syscall.SIGINT)
 	signal.Notify(signalChan, syscall.SIGUSR1)
-	changedFiles := make(map[string]bool)
+
+	WritedFiles := make(map[string]bool)
 
 loop:
 	for {
@@ -268,32 +279,26 @@ loop:
 			if event.Op&fsnotify.Create == fsnotify.Create {
 				fi, err := os.Stat(event.Name)
 				if err == nil && fi.IsDir() {
-					if !addedDirs[event.Name] {
-						err := watcher.Add(event.Name)
-						addedDirs[event.Name] = true
-						logger.Infof("path: %s add to watch, err: %v", event.Name, err)
+					if err = Syncer.AddWatchRecursion(event.Name, watcher); err != nil {
+						logger.Warnf("Syncer.AddWatchRecursion path: %s, err: %v", event.Name, err)
 					}
 				}
 			}
-			// 记录文件修改
+			// 记录文件修改,以便没有收到写事件的文件 同步
 			if event.Op&fsnotify.Write == fsnotify.Write {
 				fi, err := os.Stat(event.Name)
-				if err == nil && !fi.IsDir() {
-					changedFiles[event.Name] = true
+				if err == nil && fi.Mode().IsRegular() {
+					WritedFiles[event.Name] = true
 				}
 			}
-
 			// 如果是新创建的文件，将其添加到channel
 			if event.Op&fsnotify.Close == fsnotify.Close {
 				fi, err := os.Stat(event.Name)
-				if err == nil && !fi.IsDir() {
-
-					if !changedFiles[event.Name] {
-						// logger.Infof("file: %s no changed closed,  skip sync to cos", event.Name)
-					} else {
+				if err == nil && fi.Mode().IsRegular() {
+					if WritedFiles[event.Name] {
 						logger.Infof("file: %s changed and closed, sync to cos", event.Name)
-						Syncer.Update(event.Name, fi.Size())
-						delete(changedFiles, event.Name)
+						Syncer.ChangedChan <- util.FileChangedItem{Path: event.Name, Changed: fi.ModTime()}
+						delete(WritedFiles, event.Name)
 					}
 				}
 			}
@@ -306,15 +311,15 @@ loop:
 			watcher.Close()
 
 			// 处理修改 但是还没 closed文件
-			for filePath := range changedFiles {
+			for filePath := range WritedFiles {
 				if fi, err := os.Stat(filePath); err == nil {
 					logger.Infof("file:%s change and not closed, put into chains to sync", filePath)
-					Syncer.Update(filePath, fi.Size())
+					Syncer.ChangedChan <- util.FileChangedItem{Path: filePath, Changed: fi.ModTime()}
 				}
 			}
 
 			// 触发事件处理并等待完成
-			close(Syncer.Quit)
+			close(Syncer.ChangedChan)
 			Syncer.Wg.Wait()
 
 			// 退出循环
