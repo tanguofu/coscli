@@ -32,6 +32,9 @@ ENV TZ="Asia/Shanghai" \
     PIP_TRUSTED_HOST="mirrors.tencent.com" \
     PATH=$PATH:/root/bin:/root/.local/bin:/usr/local/bin:/tiapp/bin:/host/usr/bin:/host/usr/local/bin
 
+RUN dnf install -y git wget curl procps gawk util-linux nfs-utils mailcap tzdata  && \
+    ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime  && echo "Asia/Shanghai" > /etc/timezone && \
+    yum clean all && rm -fr /var/log/*
 
 COPY --from=gobuilder /coscli/coscli    /usr/bin/coscli
 ADD ./docker/.cos.yaml /root/.cos.yaml
