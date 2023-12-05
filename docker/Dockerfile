@@ -34,7 +34,7 @@ ENV TZ="Asia/Shanghai" \
 
 
 COPY --from=gobuilder /coscli/coscli    /usr/bin/coscli
-
+ADD ./docker/.cos.yaml /root/.cos.yaml
 
 RUN chmod +x /usr/bin/coscli
 

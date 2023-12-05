@@ -1,0 +1,14 @@
+cos:
+  base:
+    secretid: 
+    secretkey: 
+    sessiontoken: 
+    protocol: https
+    mode: "TIONE_QCSRole"
+    cvmrolename: TIONE_QCSRole
+  buckets:
+  - name: gf-chatglm3-1256580188
+    alias: chatglm
+    region: "ap-shanghai"
+    endpoint: cos.ap-shanghai.myqcloud.com
+    ofs: false
