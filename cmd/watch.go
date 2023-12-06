@@ -172,7 +172,7 @@ func (p *PeriodSynced) AddWatchRecursion(dir string, watcher *fsnotify.Watcher) 
 				return err
 			}
 			p.WatchedDirs[path] = true
-			logger.Infof("add watch sub path:%s, err: %s", path, err)
+			logger.Infof("add watch path: %s which is sub of: %s", path, dir)
 			return nil
 		}
 
@@ -202,7 +202,7 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 				path, changed := p.ChangedHeap.Top()
 
 				if time.Since(changed) <= period*10 {
-					logger.Infof("file: %s changed at:%s not exceed 10min, sync it later", path, changed.Format("2006-01-02 15:04:05.000"))
+					logger.Infof("file: %s changed at:%s not exceed 10min, sync later", path, changed.Format("2006-01-02 15:04:05.000"))
 					break
 				}
 				// sync
@@ -222,7 +222,7 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 			// 通道关闭
 			if !ok {
 
-				logger.Infof("chan is clodes, begin sync last %d files and exit", p.ChangedHeap.Len())
+				logger.Infof("chan is close, sync last %d files and exit", p.ChangedHeap.Len())
 				// 退出的时候 全部同步完
 				for i := 0; i < p.ChangedHeap.Len(); i++ {
 					_, path, _ := p.ChangedHeap.PopTop()
@@ -254,7 +254,7 @@ func (p *PeriodSynced) UploadSingleFile(c *cos.Client, localPath, bucketName, co
 
 	start := time.Now()
 	util.SyncSingleUpload(c, filePath, bucketName, cosSyncPath, op)
-	logger.Infof("syn %s, size: %s, modify: %s, take: %.2f sec, %d files lefts", filePath, util.FormatSize(fi.Size()), fi.ModTime().Format("2006-01-02 15:04:05.000"), time.Since(start).Seconds(), p.ChangedHeap.Len())
+	logger.Infof("sync file:%s, size: %s, modify: %s, take: %.2fsec,there are %d files left", filePath, util.FormatSize(fi.Size()), fi.ModTime().Format("2006-01-02 15:04:05.000"), time.Since(start).Seconds(), p.ChangedHeap.Len())
 
 }
 
@@ -327,7 +327,7 @@ loop:
 						delete(WritedFiles, event.Name)
 						logger.Infof("file: %s changed at: %s and closed, put into sync chan", event.Name, fi.ModTime().Format("2006-01-02 15:04:05.000"))
 					} else {
-						logger.Infof("file: %s is nechoot write or chmod", event.Name)
+						// logger.Infof("file: %s is not be write or chmod", event.Name)
 					}
 				}
 			}
