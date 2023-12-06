@@ -138,7 +138,7 @@ func NewPeriodSynced() *PeriodSynced {
 	return &PeriodSynced{
 		ChangedHeap: *util.NewFileChangedHeap(),
 		WatchedDirs: make(map[string]bool),
-		ChangedChan: make(chan util.FileChangedItem),
+		ChangedChan: make(chan util.FileChangedItem, 2048),
 	}
 }
 
@@ -172,7 +172,7 @@ func (p *PeriodSynced) AddWatchRecursion(dir string, watcher *fsnotify.Watcher) 
 				return err
 			}
 			p.WatchedDirs[path] = true
-			logger.Infof("add watch sub path:%s, err: %s", dir, err)
+			logger.Infof("add watch sub path:%s, err: %s", path, err)
 			return nil
 		}
 
@@ -187,10 +187,9 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 	// mark start
 	p.Wg.Add(1)
 	period := time.Minute
-
+	logger.Infof("start watch: %s sync cos://%s%s", localPath, bucketName, cosPath)
 	for {
 		select {
-		// 每 5分钟执行一次
 		case <-time.After(period):
 
 			if p.ChangedHeap.Len() == 0 {
@@ -203,7 +202,7 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 				path, changed := p.ChangedHeap.Top()
 
 				if time.Since(changed) <= period*10 {
-					logger.Infof("file: %s changed at:%s not exceed, sync it later", path, changed.Format("2006-01-02 15:04:05.000"))
+					logger.Infof("file: %s changed at:%s not exceed 10min, sync it later", path, changed.Format("2006-01-02 15:04:05.000"))
 					break
 				}
 				// sync
@@ -213,6 +212,8 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 
 			// 每 收到事件
 		case item, ok := <-p.ChangedChan:
+
+			// logger.Infof("recive item:%v ok: %t", item, ok)
 
 			if len(item.Path) > 0 {
 				p.ChangedHeap.Update(item.Path, item.Changed)
@@ -273,7 +274,6 @@ func watchAndUpload(args []string, recursive bool, include string, exclude strin
 	defer watcher.Close()
 
 	Syncer := NewPeriodSynced()
-	go Syncer.Sync(c, localPath, bucketName, cosPath, op)
 
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGTERM)
@@ -285,7 +285,8 @@ func watchAndUpload(args []string, recursive bool, include string, exclude strin
 	if err := Syncer.AddWatchRecursion(localPath, watcher); err != nil {
 		logger.Fatalf("Syncer.AddWatchRecursion dir: %s, err: %v", localPath, err)
 	}
-	logger.Infof("start watch: %s sync cos://%s%s", localPath, bucketName, cosPath)
+
+	go Syncer.Sync(c, localPath, bucketName, cosPath, op)
 
 loop:
 	for {
@@ -296,8 +297,10 @@ loop:
 				continue
 			}
 
+			// logger.Infof("receve event: %v", event)
+
 			// 如果是新创建的目录，将其添加到监视器
-			if event.Op&fsnotify.Create == fsnotify.Create {
+			if event.Op.Has(fsnotify.Create) {
 				fi, err := os.Stat(event.Name)
 				if err == nil && fi.IsDir() {
 					if err = Syncer.AddWatchRecursion(event.Name, watcher); err != nil {
@@ -306,20 +309,25 @@ loop:
 				}
 			}
 			// 记录文件修改,以便没有收到写事件的文件 同步
-			if event.Op&fsnotify.Write == fsnotify.Write {
+			if event.Op.Has(fsnotify.Write) || event.Op.Has(fsnotify.Chmod) {
 				fi, err := os.Stat(event.Name)
 				if err == nil && fi.Mode().IsRegular() {
 					WritedFiles[event.Name] = true
 				}
 			}
 			// 如果是新创建的文件，将其添加到channel
-			if event.Op&fsnotify.Close == fsnotify.Close {
+			if event.Op.Has(fsnotify.Close) {
 				fi, err := os.Stat(event.Name)
+				if err != nil {
+					logger.Warnf("stat %s, err: %v", event.Name, err)
+				}
 				if err == nil && fi.Mode().IsRegular() {
 					if WritedFiles[event.Name] {
-						logger.Infof("file: %s changed and closed, sync to cos", event.Name)
 						Syncer.ChangedChan <- util.FileChangedItem{Path: event.Name, Changed: fi.ModTime()}
 						delete(WritedFiles, event.Name)
+						logger.Infof("file: %s changed at: %s and closed, put into sync chan", event.Name, fi.ModTime().Format("2006-01-02 15:04:05.000"))
+					} else {
+						logger.Infof("file: %s is nechoot write or chmod", event.Name)
 					}
 				}
 			}

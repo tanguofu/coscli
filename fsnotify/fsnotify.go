@@ -89,6 +89,9 @@ func (o Op) String() string {
 	if o.Has(Chmod) {
 		b.WriteString("|CHMOD")
 	}
+	if o.Has(Close) {
+		b.WriteString("|Close")
+	}
 	if b.Len() == 0 {
 		return "[no events]"
 	}
