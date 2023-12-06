@@ -27,14 +27,13 @@ func (h FileChangedHeap) Len() int { return len(h.Heap) }
 func (h FileChangedHeap) Less(i, j int) bool {
 	iMod := h.Changed[h.Heap[i]]
 	jMod := h.Changed[h.Heap[j]]
-	return iMod.Before(jMod)
+	return iMod.After(jMod)
 }
 
 func (h FileChangedHeap) Swap(i, j int) { h.Heap[i], h.Heap[j] = h.Heap[j], h.Heap[i] }
 
 // use for heap
 func (h *FileChangedHeap) Push(val interface{}) {
-
 	item := val.(FileChangedItem)
 	h.Heap = append(h.Heap, item.Path)
 }
@@ -62,21 +61,28 @@ func (h *FileChangedHeap) Top() (string, time.Time) {
 
 func (h *FileChangedHeap) Update(path string, mod time.Time) bool {
 
-	// 文件被再一次 修改了
-	if h.Changed[path].Before(mod) {
-
+	last, ok := h.Changed[path]
+	// 不存在， 添加
+	if !ok {
 		h.Changed[path] = mod
-
 		heap.Push(h, FileChangedItem{
 			Path:    path,
 			Changed: mod,
 		})
+		return true
+	}
+	// 堆里面存的更新事件更新
+	if mod.Before(last) {
+		return false
 	}
 
-	return false
+	// 直接重建堆
+	h.Changed[path] = mod
+	heap.Init(h)
+	return true
 }
 
-func (h *FileChangedHeap) PopOlder() (bool, string, time.Time) {
+func (h *FileChangedHeap) PopTop() (bool, string, time.Time) {
 
 	if len(h.Heap) == 0 {
 

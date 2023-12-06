@@ -186,20 +186,29 @@ func (p *PeriodSynced) AddWatchRecursion(dir string, watcher *fsnotify.Watcher) 
 func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string, op *util.UploadOptions) {
 	// mark start
 	p.Wg.Add(1)
-	period := 5 * time.Minute
+	period := time.Minute
 
 	for {
 		select {
 		// 每 5分钟执行一次
 		case <-time.After(period):
 
+			if p.ChangedHeap.Len() == 0 {
+				return
+			}
+
+			logger.Infof("there %d files changed", p.ChangedHeap.Len())
+
 			for i := 0; i < p.ChangedHeap.Len(); i++ {
-				_, changed := p.ChangedHeap.Top()
-				// 修改事件 到  now  已经有 5min
-				if time.Since(changed) > period {
-					_, path, _ := p.ChangedHeap.PopOlder()
-					p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
+				path, changed := p.ChangedHeap.Top()
+
+				if time.Since(changed) <= period*10 {
+					logger.Infof("file: %s changed at:%s not exceed, sync it later", path, changed.Format("2006-01-02 15:04:05.000"))
+					break
 				}
+				// sync
+				p.ChangedHeap.PopTop()
+				p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
 			}
 
 			// 每 收到事件
@@ -211,12 +220,14 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 
 			// 通道关闭
 			if !ok {
+
+				logger.Infof("chan is clodes, begin sync last %d files and exit", p.ChangedHeap.Len())
 				// 退出的时候 全部同步完
 				for i := 0; i < p.ChangedHeap.Len(); i++ {
-					_, path, _ := p.ChangedHeap.PopOlder()
+					_, path, _ := p.ChangedHeap.PopTop()
 					p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
 				}
-				logger.Infof("close chan and exit sync")
+
 				// mark end
 				p.Wg.Done()
 				return
