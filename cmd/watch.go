@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -143,7 +144,7 @@ func NewPeriodSynced() *PeriodSynced {
 
 func (p *PeriodSynced) AddWatchRecursion(dir string, watcher *fsnotify.Watcher) error {
 
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 
 		if err != nil {
 			logger.Warnf("watch sub path:%s, err: %s", path, err)
@@ -158,27 +159,28 @@ func (p *PeriodSynced) AddWatchRecursion(dir string, watcher *fsnotify.Watcher) 
 			return nil
 		}
 
-		mode := info.Mode()
-
-		if mode.IsRegular() {
-			p.ChangedHeap.Update(path, info.ModTime())
+		info, _ := d.Info()
+		if d.Type().IsRegular() {
+			p.ChangedChan <- util.FileChangedItem{Path: path, Changed: info.ModTime()}
 			return nil
 		}
 
-		if mode.IsDir() {
+		if d.Type().IsDir() {
 			err = watcher.Add(path)
 			if err != nil {
 				logger.Warnf("watch sub path:%s, err: %s", path, err)
 				return err
 			}
 			p.WatchedDirs[path] = true
+			logger.Infof("add watch sub path:%s, err: %s", dir, err)
 			return nil
-
 		}
 
-		logger.Infof("skip path :%s, mode:%+v", path, mode)
+		logger.Infof("skip path :%s, mode: %+v", path, d.Type())
 		return nil
 	})
+
+	return err
 }
 
 func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string, op *util.UploadOptions) {
@@ -214,6 +216,7 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 					_, path, _ := p.ChangedHeap.PopOlder()
 					p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
 				}
+				logger.Infof("close chan and exit sync")
 				// mark end
 				p.Wg.Done()
 				return
@@ -237,8 +240,10 @@ func (p *PeriodSynced) UploadSingleFile(c *cos.Client, localPath, bucketName, co
 	}
 	cosSyncPath := filepath.Join(cosPath, relPath)
 
-	logger.Infof("syn %s, size: %s, modify: %s, there is %d need to sync", filePath, util.FormatSize(fi.Size()), fi.ModTime().Format("2006-01-02 15:04:05.000"), p.ChangedHeap.Len())
+	start := time.Now()
 	util.SyncSingleUpload(c, filePath, bucketName, cosSyncPath, op)
+	logger.Infof("syn %s, size: %s, modify: %s, take: %.2f sec, %d files lefts", filePath, util.FormatSize(fi.Size()), fi.ModTime().Format("2006-01-02 15:04:05.000"), time.Since(start).Seconds(), p.ChangedHeap.Len())
+
 }
 
 func watchAndUpload(args []string, recursive bool, include string, exclude string, op *util.UploadOptions,
@@ -265,6 +270,11 @@ func watchAndUpload(args []string, recursive bool, include string, exclude strin
 	signal.Notify(signalChan, syscall.SIGUSR1)
 
 	WritedFiles := make(map[string]bool)
+
+	if err := Syncer.AddWatchRecursion(localPath, watcher); err != nil {
+		logger.Fatalf("Syncer.AddWatchRecursion dir: %s, err: %v", localPath, err)
+	}
+	logger.Infof("start watch: %s sync cos://%s%s", localPath, bucketName, cosPath)
 
 loop:
 	for {
