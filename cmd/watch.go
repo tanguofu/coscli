@@ -193,13 +193,12 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 
 	for {
 		select {
-		case <-time.After(period):
+		case <-time.Tick(period):
+			logger.Infof("there %d files changed", p.ChangedHeap.Len())
 
 			if p.ChangedHeap.Len() == 0 {
 				return
 			}
-
-			logger.Infof("there %d files changed", p.ChangedHeap.Len())
 
 			for i := 0; i < p.ChangedHeap.Len(); i++ {
 				path, changed := p.ChangedHeap.Top()
@@ -225,14 +224,10 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 			// 每 收到事件
 		case item, ok := <-p.ChangedChan:
 
-			// logger.Infof("recive item:%v ok: %t", item, ok)
-
-			if len(item.Path) > 0 {
-				p.ChangedHeap.Update(item.Path, item.Changed)
-			}
-
 			// 通道关闭
-			if !ok {
+			if ok {
+				p.ChangedHeap.Update(item.Path, item.Changed)
+			} else {
 
 				logger.Infof("chan is close, sync last %d files and exit", p.ChangedHeap.Len())
 				// 退出的时候 全部同步完
@@ -288,27 +283,25 @@ func watchAndUpload(args []string, recursive bool, include string, exclude strin
 	logger.Infof("NewClient from config: %+v", config)
 	c := util.NewClient(&config, &param, bucketName)
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		logger.Fatalf("fsnotify.NewWatcher, err:%v", err)
-	}
-	defer watcher.Close()
-
 	Syncer := NewPeriodSynced()
+	go Syncer.Sync(c, localPath, bucketName, cosPath, op)
 
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGTERM)
 	signal.Notify(signalChan, syscall.SIGINT)
 	signal.Notify(signalChan, syscall.SIGUSR1)
 
-	WritedFiles := make(map[string]bool)
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		logger.Fatalf("fsnotify.NewWatcher, err:%v", err)
+	}
+	defer watcher.Close()
 
 	if err := Syncer.AddWatchRecursion(localPath, watcher); err != nil {
 		logger.Fatalf("Syncer.AddWatchRecursion dir: %s, err: %v", localPath, err)
 	}
 
-	go Syncer.Sync(c, localPath, bucketName, cosPath, op)
-
+	WritedFiles := make(map[string]bool)
 loop:
 	for {
 		select {
@@ -317,8 +310,6 @@ loop:
 			if strings.HasSuffix(event.Name, "coscli.log") {
 				continue
 			}
-
-			// logger.Infof("receve event: %v", event)
 
 			// 如果是新创建的目录，将其添加到监视器
 			if event.Op.Has(fsnotify.Create) {
@@ -345,8 +336,8 @@ loop:
 				if err == nil && fi.Mode().IsRegular() {
 					if WritedFiles[event.Name] {
 						Syncer.ChangedChan <- util.FileChangedItem{Path: event.Name, Changed: fi.ModTime()}
-						delete(WritedFiles, event.Name)
-						logger.Infof("file: %s changed at: %s and closed, put into sync chan", event.Name, fi.ModTime().Format("2006-01-02 15:04:05.000"))
+						WritedFiles[event.Name] = false
+						logger.Infof("file: %s changed and closed, put into sync chan", event.Name)
 					} else {
 						// logger.Infof("file: %s is not be write or chmod", event.Name)
 					}
