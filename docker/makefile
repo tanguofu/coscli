@@ -16,5 +16,6 @@ push:
 	
 release: images
 	docker tag  ${REPO}/${APP}:${TAG}  ${REPO}/${APP}:latest
+	docker push ${REPO}/${APP}:${TAG}
 	docker push ${REPO}/${APP}:latest
 

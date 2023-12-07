@@ -186,24 +186,21 @@ func (p *PeriodSynced) AddWatchRecursion(dir string, watcher *fsnotify.Watcher) 
 func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string, op *util.UploadOptions) {
 	// mark start
 	p.Wg.Add(1)
-	period := time.Minute
+	ticker := time.NewTicker(time.Minute)
 	lastSynced := make(map[string]time.Time)
 
 	logger.Infof("start watch: %s sync cos://%s%s", localPath, bucketName, cosPath)
 
 	for {
 		select {
-		case <-time.Tick(period):
-			logger.Infof("there %d files changed", p.ChangedHeap.Len())
 
-			if p.ChangedHeap.Len() == 0 {
-				return
-			}
+		case <-ticker.C:
+			logger.Infof("there %d files changed", p.ChangedHeap.Len())
 
 			for i := 0; i < p.ChangedHeap.Len(); i++ {
 				path, changed := p.ChangedHeap.Top()
 
-				if time.Since(changed) <= period*10 {
+				if time.Since(changed) <= time.Minute*10 {
 					logger.Infof("sync later file: %s changed at:%s not exceed 10min", path, changed.Format("2006-01-02 15:04:05.000"))
 					break
 				}
@@ -244,7 +241,7 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 						logger.Infof("sync skip file:%s changed:%s which already sync at:%s", path, changed.Format("2006-01-02 15:04:05.000"), lastSync.Format("2006-01-02 15:04:05.000"))
 					}
 				}
-
+				ticker.Stop()
 				// mark end
 				p.Wg.Done()
 				return
