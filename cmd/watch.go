@@ -187,7 +187,10 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 	// mark start
 	p.Wg.Add(1)
 	period := time.Minute
+	lastSynced := make(map[string]time.Time)
+
 	logger.Infof("start watch: %s sync cos://%s%s", localPath, bucketName, cosPath)
+
 	for {
 		select {
 		case <-time.After(period):
@@ -202,12 +205,21 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 				path, changed := p.ChangedHeap.Top()
 
 				if time.Since(changed) <= period*10 {
-					logger.Infof("file: %s changed at:%s not exceed 10min, sync later", path, changed.Format("2006-01-02 15:04:05.000"))
+					logger.Infof("sync later file: %s changed at:%s not exceed 10min", path, changed.Format("2006-01-02 15:04:05.000"))
 					break
 				}
 				// sync
 				p.ChangedHeap.PopTop()
-				p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
+
+				lastSync := lastSynced[path]
+
+				// whether already sync
+				if lastSync.Before(changed) {
+					lastSynced[path] = changed
+					p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
+				} else {
+					logger.Infof("sync skip file:%s changed:%s which already sync at:%s", path, changed.Format("2006-01-02 15:04:05.000"), lastSync.Format("2006-01-02 15:04:05.000"))
+				}
 			}
 
 			// 每 收到事件
@@ -225,8 +237,17 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 				logger.Infof("chan is close, sync last %d files and exit", p.ChangedHeap.Len())
 				// 退出的时候 全部同步完
 				for i := 0; i < p.ChangedHeap.Len(); i++ {
-					_, path, _ := p.ChangedHeap.PopTop()
-					p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
+					_, path, changed := p.ChangedHeap.PopTop()
+
+					lastSync := lastSynced[path]
+
+					// whether already sync
+					if lastSync.Before(changed) {
+						lastSynced[path] = changed
+						p.UploadSingleFile(c, localPath, bucketName, cosPath, path, op)
+					} else {
+						logger.Infof("sync skip file:%s changed:%s which already sync at:%s", path, changed.Format("2006-01-02 15:04:05.000"), lastSync.Format("2006-01-02 15:04:05.000"))
+					}
 				}
 
 				// mark end
