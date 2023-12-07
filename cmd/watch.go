@@ -195,7 +195,10 @@ func (p *PeriodSynced) Sync(c *cos.Client, localPath, bucketName, cosPath string
 		select {
 
 		case <-ticker.C:
-			logger.Infof("there %d files changed", p.ChangedHeap.Len())
+
+			if p.ChangedHeap.Len() == 0 {
+				logger.Infof("there no files changed")
+			}
 
 			for i := 0; i < p.ChangedHeap.Len(); i++ {
 				path, changed := p.ChangedHeap.Top()
@@ -334,7 +337,7 @@ loop:
 					if WritedFiles[event.Name] {
 						Syncer.ChangedChan <- util.FileChangedItem{Path: event.Name, Changed: fi.ModTime()}
 						WritedFiles[event.Name] = false
-						logger.Infof("file: %s changed and closed, put into sync chan", event.Name)
+						// logger.Infof("file: %s changed and closed, put into sync chan", event.Name)
 					} else {
 						// logger.Infof("file: %s is not be write or chmod", event.Name)
 					}
